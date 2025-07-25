@@ -13,29 +13,29 @@ app.post('/send-otp', async (req, res) => {
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
   const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: 'thinlam6@gmail.com',        // Đúng email
-    pass: 'soxd sumv telb uelv',        // Đúng app password 16 chữ
-  }
-});
-
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
 
   const mailOptions = {
-    from: 'EFB App <' + process.env.EMAIL_USER + '>',
+    from: `EFB App <${process.env.EMAIL_USER}>`,
     to: email,
     subject: 'Mã xác thực OTP của bạn',
     text: `Mã OTP của bạn là: ${otp}`,
   };
 
   try {
+    console.log('Đang gửi OTP đến:', email);
     await transporter.sendMail(mailOptions);
     res.json({ success: true, otp });
   } catch (err) {
-    console.error(err);
+    console.error('Lỗi gửi OTP:', err);
     res.status(500).json({ success: false, message: 'Lỗi gửi email' });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
