@@ -13,6 +13,8 @@ app.use(express.json());
 // 📌 Load service account từ file JSON
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
 
+serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n'); // fix lỗi PEM
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
