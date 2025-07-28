@@ -38,16 +38,38 @@ app.post('/send-otp', async (req, res) => {
   });
 
   const mailOptions = {
-    from: `English For Beginner <${process.env.EMAIL_USER}>`,
-    to: email,
-    subject: 'Mã xác thực OTP của bạn',
-    html: `
-      <p>👋 Xin chào,</p>
-      <p>Đây là mã OTP để xác thực tài khoản EFB:</p>
-      <h2>${otp}</h2>
-      <p>Vui lòng không chia sẻ mã này với bất kỳ ai.</p>
-    `,
-  };
+  from: `English For Beginner <${process.env.EMAIL_USER}>`,
+  to: email,
+  subject: 'Mã xác thực OTP của bạn',
+  html: `
+    <div style="font-family: Arial, sans-serif; color: #333; padding: 20px;">
+      <h2 style="color: #6C63FF;">🔐 Xác minh tài khoản EFB</h2>
+
+      <p>Chào bạn,</p>
+
+      <p>Bạn (hoặc ai đó) vừa yêu cầu mã OTP để xác thực tài khoản trên <strong>English For Beginners</strong>.</p>
+
+      <p style="margin: 20px 0; font-size: 18px;">
+        Mã xác thực của bạn là:
+        <br/>
+        <span style="display: inline-block; margin-top: 10px; padding: 12px 24px; background-color: #f4f4f4; border-radius: 8px; font-size: 26px; font-weight: bold; color: #6C63FF;">
+          ${otp}
+        </span>
+      </p>
+
+      <p>Vui lòng không chia sẻ mã này với bất kỳ ai để bảo vệ tài khoản của bạn.</p>
+
+      <p>Nếu bạn không thực hiện yêu cầu này, hãy bỏ qua email này.</p>
+
+      <hr style="margin: 30px 0;" />
+
+      <p style="font-size: 14px; color: #999;">
+        Trân trọng,<br/>
+        Đội ngũ <strong>EFB - English For Beginners</strong>
+      </p>
+    </div>
+  `,
+};
 
   try {
     console.log(`✅ Đang gửi OTP đến ${email}...`);
