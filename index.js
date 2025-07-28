@@ -3,17 +3,19 @@ import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import admin from 'firebase-admin';
-import fs from 'fs';
 
 dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 📌 Load service account từ file JSON
+// ✅ Load Firebase service account
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
 
-serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n'); // fix lỗi PEM
+// ⚠️ Fix lỗi xuống dòng trong private_key
+if (serviceAccount.private_key.includes('\\n')) {
+  serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+}
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -22,13 +24,16 @@ admin.initializeApp({
 // 📨 Gửi OTP
 app.post('/send-otp', async (req, res) => {
   const { email } = req.body;
+
+  // ✅ Tạo mã OTP 6 chữ số
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
+  // ✉️ Cấu hình gửi Gmail
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
+      user: process.env.EMAIL_USER,     // Gmail bạn
+      pass: process.env.EMAIL_PASS,     // Mật khẩu ứng dụng Gmail
     },
   });
 
@@ -36,20 +41,25 @@ app.post('/send-otp', async (req, res) => {
     from: `EFB App <${process.env.EMAIL_USER}>`,
     to: email,
     subject: 'Mã xác thực OTP của bạn',
-    text: `Mã OTP của bạn là: ${otp}`,
+    html: `
+      <p>👋 Xin chào,</p>
+      <p>Đây là mã OTP để xác thực tài khoản EFB:</p>
+      <h2>${otp}</h2>
+      <p>Vui lòng không chia sẻ mã này với bất kỳ ai.</p>
+    `,
   };
 
   try {
-    console.log('Đang gửi OTP đến:', email);
+    console.log(`✅ Đang gửi OTP đến ${email}...`);
     await transporter.sendMail(mailOptions);
-    res.json({ success: true, otp });
-  } catch (err) {
-    console.error('Lỗi gửi OTP:', err);
-    res.status(500).json({ success: false, message: 'Lỗi gửi email' });
+    res.json({ success: true, message: 'Đã gửi OTP', otp });
+  } catch (error) {
+    console.error('❌ Lỗi gửi OTP:', error);
+    res.status(500).json({ success: false, message: 'Không gửi được OTP' });
   }
 });
 
-// 🔐 Reset mật khẩu (thật sự trên Firebase)
+// 🔐 Reset mật khẩu Firebase
 app.post('/reset-password', async (req, res) => {
   const { email, newPassword } = req.body;
 
@@ -58,11 +68,14 @@ app.post('/reset-password', async (req, res) => {
     await admin.auth().updateUser(user.uid, { password: newPassword });
 
     res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
-  } catch (err) {
-    console.error('Lỗi cập nhật mật khẩu:', err);
-    res.status(500).json({ success: false, message: err.message });
+  } catch (error) {
+    console.error('❌ Lỗi cập nhật mật khẩu:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
+// 🚀 Khởi động server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Server is running on port ${PORT}`);
+});
