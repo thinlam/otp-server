@@ -62,7 +62,7 @@ app.post('/send-otp', async (req, res) => {
 // 🔐 Reset mật khẩu Firebase
 app.post('/reset-password', async (req, res) => {
   const { email, newPassword } = req.body;
-
+  
   try {
     const user = await admin.auth().getUserByEmail(email);
     await admin.auth().updateUser(user.uid, { password: newPassword });
@@ -71,6 +71,8 @@ app.post('/reset-password', async (req, res) => {
   } catch (error) {
     console.error('❌ Lỗi cập nhật mật khẩu:', error);
     res.status(500).json({ success: false, message: error.message });
+    console.error('❌ Email không hợp lệ:', error.message);
+    res.status(404).json({ success: false, message: 'Email không tồn tại trong hệ thống' });
   }
 });
 
