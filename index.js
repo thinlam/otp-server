@@ -38,7 +38,7 @@ app.post('/send-otp', async (req, res) => {
   });
 
   const mailOptions = {
-    from: `EnglishForBeginner <${process.env.EMAIL_USER}>`,
+    from: `EFB App <${process.env.EMAIL_USER}>`,
     to: email,
     subject: 'Mã xác thực OTP của bạn',
     html: `
