@@ -46,18 +46,19 @@ function getAccountConfig(rawAccount) {
       from: `Math Master <${user}>`,
       subject: 'Math Master • Mã OTP của bạn',
       theme: {
-        primary: '#7C3AED',     // tím
-        accent: '#22C55E',      // xanh lá
-        text: '#111827',
-        muted: '#6B7280',
-        border: '#E5E7EB',
-        bg: '#F9FAFB',
+        primary: '#7C3AED',
+        accent:  '#22C55E',
+        text:    '#111827',
+        muted:   '#6B7280',
+        border:  '#E5E7EB',
+        bg:      '#F9FAFB',
       },
-      support: 'support@mathmaster.app',
+      // 👉 đổi sang Gmail mong muốn
+      support: 'mathmaster396@gmail.com',
     };
   }
 
-  // default: efb
+  // default: EFB
   const user = process.env.EMAIL_USER;
   const pass = process.env.EMAIL_PASS;
   if (!user || !pass) throw new Error('Missing EMAIL_USER/EMAIL_PASS');
@@ -69,14 +70,14 @@ function getAccountConfig(rawAccount) {
     from: `English For Beginner <${user}>`,
     subject: 'EFB • Mã OTP của bạn',
     theme: {
-      primary: '#2563EB',      // xanh dương
-      accent: '#F59E0B',       // vàng
-      text: '#111827',
-      muted: '#6B7280',
-      border: '#E5E7EB',
-      bg: '#F9FAFB',
+      primary: '#2563EB',
+      accent:  '#F59E0B',
+      text:    '#111827',
+      muted:   '#6B7280',
+      border:  '#E5E7EB',
+      bg:      '#F9FAFB',
     },
-    support: 'support@efbenglish.app',
+    support: 'efbenglishforbeginner@gmail.com',
   };
 }
 
