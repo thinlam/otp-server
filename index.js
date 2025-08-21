@@ -11,16 +11,59 @@ app.use(cors());
 app.use(express.json());
 
 /* ============================
-   Firebase Admin init (1 project)
+   Firebase Admin init (multi-project)
    ============================ */
-if (!process.env.SERVICE_ACCOUNT_KEY) {
-  throw new Error('Missing SERVICE_ACCOUNT_KEY in .env');
+function parseServiceAccount(jsonStr) {
+  const obj = JSON.parse(jsonStr);
+  if (obj.private_key && obj.private_key.includes('\\n')) {
+    obj.private_key = obj.private_key.replace(/\\n/g, '\n');
+  }
+  return obj;
 }
-const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
-if (serviceAccount.private_key && serviceAccount.private_key.includes('\\n')) {
-  serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+
+const apps = {};
+// EFB
+if (process.env.SERVICE_ACCOUNT_KEY_EFB) {
+  apps.efb = admin.initializeApp(
+    { credential: admin.credential.cert(parseServiceAccount(process.env.SERVICE_ACCOUNT_KEY_EFB)) },
+    'efb'
+  );
 }
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+// Math Master
+if (process.env.SERVICE_ACCOUNT_KEY_MM || process.env.SERVICE_ACCOUNT_KEY2) {
+  const mmKey = process.env.SERVICE_ACCOUNT_KEY_MM || process.env.SERVICE_ACCOUNT_KEY2;
+  apps.mathmaster = admin.initializeApp(
+    { credential: admin.credential.cert(parseServiceAccount(mmKey)) },
+    'mathmaster'
+  );
+}
+// Fallback: nếu chỉ có SERVICE_ACCOUNT_KEY thì dùng cho efb
+if (!apps.efb && process.env.SERVICE_ACCOUNT_KEY) {
+  apps.efb = admin.initializeApp(
+    { credential: admin.credential.cert(parseServiceAccount(process.env.SERVICE_ACCOUNT_KEY)) },
+    'efb'
+  );
+}
+function getAuthByKey(key) {
+  return admin.app(key).auth();
+}
+function getAuthCandidates(rawAccount) {
+  const acc = String(rawAccount || 'efb').toLowerCase();
+  // Nếu truyền rõ ràng -> ưu tiên đúng project; nếu thiếu -> thử cả hai.
+  const keys =
+    acc === 'mathmaster'
+      ? ['mathmaster', 'efb']
+      : acc === 'efb'
+      ? ['efb', 'mathmaster']
+      : ['efb', 'mathmaster'];
+  const list = [];
+  for (const k of keys) {
+    try {
+      list.push(getAuthByKey(k));
+    } catch {}
+  }
+  return list;
+}
 
 /* ============================
    Email helpers (2 accounts)
@@ -47,7 +90,7 @@ function getAccountConfig(rawAccount) {
         border:  '#E5E7EB',
         bg:      '#F9FAFB',
       },
-      support: 'mathmaster396@gmail.com', // đã đổi theo yêu cầu
+      support: 'mathmaster396@gmail.com',
     };
   }
 
@@ -104,6 +147,17 @@ function checkOtp(account, email, code) {
   if (String(code) !== String(item.code)) return { ok: false, reason: 'Mã OTP không đúng' };
   otpStore.delete(key); // one-time
   return { ok: true };
+}
+
+// Nếu client không truyền account khi verify -> thử cả hai
+function checkOtpAny(email, code) {
+  const tries = [
+    checkOtp('efb', email, code),
+    checkOtp('mathmaster', email, code),
+  ];
+  if (tries[0].ok || tries[1].ok) return { ok: true };
+  // trả reason gần nhất
+  return { ok: false, reason: tries[1].reason || tries[0].reason || 'OTP không hợp lệ' };
 }
 
 /* ============================
@@ -205,7 +259,7 @@ app.post('/send-otp', async (req, res) => {
       headers: { 'X-Auto-Response-Suppress': 'All' },
     });
 
-    // Dev option: set RETURN_OTP_IN_RESPONSE=true để test nhanh trên app
+    // Dev option: trả OTP để test nhanh
     const payload = { success: true, message: `Đã gửi OTP qua ${cfg.name}` };
     if (String(process.env.RETURN_OTP_IN_RESPONSE).toLowerCase() === 'true') {
       payload.otp = otp;
@@ -218,17 +272,17 @@ app.post('/send-otp', async (req, res) => {
 });
 
 /* ============================
-   API: Verify OTP (chuẩn prod)
+   API: Verify OTP (prod)
    ============================ */
 app.post('/verify-otp', async (req, res) => {
   let { email, otp, account } = req.body || {};
-  account = String(account || 'efb').toLowerCase();
+  account = account ? String(account).toLowerCase() : undefined;
 
   if (!email || !otp) {
     return res.status(400).json({ success: false, message: 'Missing email or otp' });
   }
 
-  const result = checkOtp(account, email, otp);
+  const result = account ? checkOtp(account, email, otp) : checkOtpAny(email, otp);
   if (!result.ok) {
     return res.status(400).json({ success: false, message: result.reason });
   }
@@ -237,20 +291,50 @@ app.post('/verify-otp', async (req, res) => {
 
 /* ============================
    API: Reset mật khẩu Firebase
+   - chọn project theo `account`
+   - nếu không truyền account -> thử cả hai
    ============================ */
 app.post('/reset-password', async (req, res) => {
-  const { email, newPassword } = req.body || {};
+  let { email, newPassword, account } = req.body || {};
+  account = account ? String(account).toLowerCase() : undefined;
+
   if (!email || !newPassword) {
     return res.status(400).json({ success: false, message: 'Missing email or newPassword' });
   }
-  try {
-    const user = await admin.auth().getUserByEmail(email);
-    await admin.auth().updateUser(user.uid, { password: newPassword });
-    return res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
-  } catch (error) {
-    console.error('❌ Lỗi cập nhật mật khẩu:', error);
-    return res.status(500).json({ success: false, message: error?.message || 'Update failed' });
+
+  const candidates = getAuthCandidates(account);
+  if (!candidates.length) {
+    return res.status(500).json({ success: false, message: 'Firebase admin chưa được cấu hình' });
   }
+
+  const normalizedEmail = String(email).trim();
+  let updated = false;
+  let lastErr = null;
+
+  for (const auth of candidates) {
+    try {
+      const user = await auth.getUserByEmail(normalizedEmail);
+      await auth.updateUser(user.uid, { password: newPassword });
+      updated = true;
+      break;
+    } catch (e) {
+      lastErr = e;
+      // nếu là user-not-found thì thử app tiếp theo
+      if (e?.errorInfo?.code !== 'auth/user-not-found' && e?.code !== 'auth/user-not-found') {
+        break;
+      }
+    }
+  }
+
+  if (!updated) {
+    const code = lastErr?.errorInfo?.code || lastErr?.code;
+    if (code === 'auth/user-not-found') {
+      return res.status(404).json({ success: false, message: 'Tài khoản không tồn tại trong các dự án đã cấu hình.' });
+    }
+    return res.status(500).json({ success: false, message: lastErr?.message || 'Update failed' });
+  }
+
+  return res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
 });
 
 /* ============================
