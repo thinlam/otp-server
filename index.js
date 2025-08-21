@@ -1,3 +1,4 @@
+// index.js
 import express from 'express';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
@@ -11,56 +12,77 @@ app.use(cors());
 app.use(express.json());
 
 /* ============================
-   Firebase Admin init (multi-project)
+   Firebase Admin init (multi-project, robust)
    ============================ */
-function parseServiceAccount(jsonStr) {
-  const obj = JSON.parse(jsonStr);
-  if (obj.private_key && obj.private_key.includes('\\n')) {
+function fixPrivateKey(obj) {
+  if (obj?.private_key?.includes('\\n')) {
     obj.private_key = obj.private_key.replace(/\\n/g, '\n');
   }
   return obj;
 }
+function parseServiceAccount(raw, varName) {
+  if (!raw || !String(raw).trim()) {
+    throw new Error(`${varName} is empty or undefined`);
+  }
+  const s = String(raw).trim();
+  // Try JSON directly
+  try {
+    return fixPrivateKey(JSON.parse(s));
+  } catch {
+    // Try base64 -> JSON
+    try {
+      const decoded = Buffer.from(s, 'base64').toString('utf8');
+      return fixPrivateKey(JSON.parse(decoded));
+    } catch {
+      const preview = s.slice(0, 80);
+      throw new Error(`${varName} is not valid JSON (or base64). Preview: ${preview}…`);
+    }
+  }
+}
 
 const apps = {};
+let anyApp = false;
+
 // EFB
 if (process.env.SERVICE_ACCOUNT_KEY_EFB) {
-  apps.efb = admin.initializeApp(
-    { credential: admin.credential.cert(parseServiceAccount(process.env.SERVICE_ACCOUNT_KEY_EFB)) },
-    'efb'
+  const cred = admin.credential.cert(
+    parseServiceAccount(process.env.SERVICE_ACCOUNT_KEY_EFB, 'SERVICE_ACCOUNT_KEY_EFB')
   );
+  apps.efb = admin.initializeApp({ credential: cred }, 'efb');
+  anyApp = true;
 }
-// Math Master
-if (process.env.SERVICE_ACCOUNT_KEY_MM || process.env.SERVICE_ACCOUNT_KEY2) {
-  const mmKey = process.env.SERVICE_ACCOUNT_KEY_MM || process.env.SERVICE_ACCOUNT_KEY2;
-  apps.mathmaster = admin.initializeApp(
-    { credential: admin.credential.cert(parseServiceAccount(mmKey)) },
-    'mathmaster'
+// Math Master (chấp nhận SERVICE_ACCOUNT_KEY_MM hoặc SERVICE_ACCOUNT_KEY2)
+const MM_ENV = process.env.SERVICE_ACCOUNT_KEY_MM || process.env.SERVICE_ACCOUNT_KEY2;
+if (MM_ENV) {
+  const cred = admin.credential.cert(
+    parseServiceAccount(MM_ENV, MM_ENV === process.env.SERVICE_ACCOUNT_KEY_MM ? 'SERVICE_ACCOUNT_KEY_MM' : 'SERVICE_ACCOUNT_KEY2')
   );
+  apps.mathmaster = admin.initializeApp({ credential: cred }, 'mathmaster');
+  anyApp = true;
 }
 // Fallback: nếu chỉ có SERVICE_ACCOUNT_KEY thì dùng cho efb
 if (!apps.efb && process.env.SERVICE_ACCOUNT_KEY) {
-  apps.efb = admin.initializeApp(
-    { credential: admin.credential.cert(parseServiceAccount(process.env.SERVICE_ACCOUNT_KEY)) },
-    'efb'
+  const cred = admin.credential.cert(
+    parseServiceAccount(process.env.SERVICE_ACCOUNT_KEY, 'SERVICE_ACCOUNT_KEY')
+  );
+  apps.efb = admin.initializeApp({ credential: cred }, 'efb');
+  anyApp = true;
+}
+if (!anyApp) {
+  throw new Error(
+    'No Firebase service account env var found. Set one of SERVICE_ACCOUNT_KEY_EFB / SERVICE_ACCOUNT_KEY_MM (/ SERVICE_ACCOUNT_KEY2) or SERVICE_ACCOUNT_KEY.'
   );
 }
+
 function getAuthByKey(key) {
   return admin.app(key).auth();
 }
 function getAuthCandidates(rawAccount) {
   const acc = String(rawAccount || 'efb').toLowerCase();
-  // Nếu truyền rõ ràng -> ưu tiên đúng project; nếu thiếu -> thử cả hai.
-  const keys =
-    acc === 'mathmaster'
-      ? ['mathmaster', 'efb']
-      : acc === 'efb'
-      ? ['efb', 'mathmaster']
-      : ['efb', 'mathmaster'];
+  const keys = acc === 'mathmaster' ? ['mathmaster', 'efb'] : ['efb', 'mathmaster'];
   const list = [];
   for (const k of keys) {
-    try {
-      list.push(getAuthByKey(k));
-    } catch {}
+    try { list.push(getAuthByKey(k)); } catch {}
   }
   return list;
 }
@@ -135,7 +157,6 @@ function setOtp(account, email, code) {
   const key = `${String(account).toLowerCase()}:${String(email).toLowerCase()}`;
   otpStore.set(key, { code: String(code), exp: Date.now() + OTP_TTL_MS });
 }
-
 function checkOtp(account, email, code) {
   const key = `${String(account).toLowerCase()}:${String(email).toLowerCase()}`;
   const item = otpStore.get(key);
@@ -148,15 +169,12 @@ function checkOtp(account, email, code) {
   otpStore.delete(key); // one-time
   return { ok: true };
 }
-
-// Nếu client không truyền account khi verify -> thử cả hai
 function checkOtpAny(email, code) {
   const tries = [
     checkOtp('efb', email, code),
     checkOtp('mathmaster', email, code),
   ];
   if (tries[0].ok || tries[1].ok) return { ok: true };
-  // trả reason gần nhất
   return { ok: false, reason: tries[1].reason || tries[0].reason || 'OTP không hợp lệ' };
 }
 
@@ -230,6 +248,11 @@ function buildOtpEmail({ otp, cfg, toEmail }) {
 }
 
 /* ============================
+   API: Health check
+   ============================ */
+app.get('/', (_req, res) => res.json({ ok: true }));
+
+/* ============================
    API: Gửi OTP
    ============================ */
 app.post('/send-otp', async (req, res) => {
@@ -244,7 +267,7 @@ app.post('/send-otp', async (req, res) => {
     const cfg = getAccountConfig(account);
     console.log('Send OTP:', { email, account: cfg.name, using: cfg.user });
 
-    // lưu OTP vào bộ nhớ (ghi đè mã cũ)
+    // save OTP (override previous)
     setOtp(account, email, otp);
 
     const tpl = buildOtpEmail({ otp, cfg, toEmail: email });
@@ -259,7 +282,7 @@ app.post('/send-otp', async (req, res) => {
       headers: { 'X-Auto-Response-Suppress': 'All' },
     });
 
-    // Dev option: trả OTP để test nhanh
+    // dev helper
     const payload = { success: true, message: `Đã gửi OTP qua ${cfg.name}` };
     if (String(process.env.RETURN_OTP_IN_RESPONSE).toLowerCase() === 'true') {
       payload.otp = otp;
