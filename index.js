@@ -1,4 +1,3 @@
-// index.js
 import express from 'express';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
@@ -6,330 +5,101 @@ import cors from 'cors';
 import admin from 'firebase-admin';
 
 dotenv.config();
-
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* ============================
-   Firebase Admin init (multi-project, robust)
-   ============================ */
-function fixPrivateKey(obj) {
-  if (obj?.private_key?.includes('\\n')) {
-    obj.private_key = obj.private_key.replace(/\\n/g, '\n');
-  }
-  return obj;
-}
-function stripWrappingQuotes(s) {
-  const t = s.trim();
-  const first = t[0], last = t[t.length - 1];
-  if ((first === '"' && last === '"') || (first === "'" && last === "'") || (first === '`' && last === '`')) {
-    return t.slice(1, -1);
-  }
-  return t;
-}
-function parseServiceAccount(raw, varName) {
-  if (!raw || !String(raw).trim()) {
-    throw new Error(`${varName} is empty or undefined`);
-  }
-  let s = stripWrappingQuotes(String(raw));
-  try { return fixPrivateKey(JSON.parse(s)); } catch {}
-  try {
-    const decoded = Buffer.from(s, 'base64').toString('utf8');
-    return fixPrivateKey(JSON.parse(decoded));
-  } catch {}
-  const preview = s.slice(0, 100);
-  throw new Error(`${varName} is not valid JSON (or base64). Preview: ${preview}…`);
+// ✅ Load Firebase service account
+const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
+
+// ⚠️ Fix lỗi xuống dòng trong private_key
+if (serviceAccount.private_key.includes('\\n')) {
+  serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 }
 
-const apps = {};
-let anyApp = false;
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
-// EFB (ưu tiên SERVICE_ACCOUNT_KEY_EFB; fallback SERVICE_ACCOUNT_KEY)
-if (process.env.SERVICE_ACCOUNT_KEY_EFB) {
-  apps.efb = admin.initializeApp(
-    { credential: admin.credential.cert(parseServiceAccount(process.env.SERVICE_ACCOUNT_KEY_EFB, 'SERVICE_ACCOUNT_KEY_EFB')) },
-    'efb'
-  );
-  anyApp = true;
-} else if (process.env.SERVICE_ACCOUNT_KEY) {
-  apps.efb = admin.initializeApp(
-    { credential: admin.credential.cert(parseServiceAccount(process.env.SERVICE_ACCOUNT_KEY, 'SERVICE_ACCOUNT_KEY')) },
-    'efb'
-  );
-  anyApp = true;
-}
-
-// Math Master
-if (process.env.SERVICE_ACCOUNT_KEY_MM || process.env.SERVICE_ACCOUNT_KEY2) {
-  const RAW = process.env.SERVICE_ACCOUNT_KEY_MM || process.env.SERVICE_ACCOUNT_KEY2;
-  apps.mathmaster = admin.initializeApp(
-    { credential: admin.credential.cert(parseServiceAccount(RAW, process.env.SERVICE_ACCOUNT_KEY_MM ? 'SERVICE_ACCOUNT_KEY_MM' : 'SERVICE_ACCOUNT_KEY2')) },
-    'mathmaster'
-  );
-  anyApp = true;
-}
-
-if (!anyApp) {
-  throw new Error('No Firebase service account provided. Set SERVICE_ACCOUNT_KEY_EFB and/or SERVICE_ACCOUNT_KEY_MM (or SERVICE_ACCOUNT_KEY).');
-}
-
-function getAuthCandidates(rawAccount) {
-  const acc = String(rawAccount || 'efb').toLowerCase();
-  const order = acc === 'mathmaster' ? ['mathmaster', 'efb'] : ['efb', 'mathmaster'];
-  const list = [];
-  for (const name of order) {
-    try { list.push(admin.app(name).auth()); } catch {}
-  }
-  return list;
-}
-
-/* ============================
-   Email helpers (2 accounts)
-   ============================ */
-function getAccountConfig(rawAccount) {
-  const account = String(rawAccount || 'efb').toLowerCase();
-
-  if (account === 'mathmaster') {
-    const user = process.env.EMAIL_USER2;
-    const pass = process.env.EMAIL_PASS2;
-    if (!user || !pass) throw new Error('Missing EMAIL_USER2/EMAIL_PASS2');
-    return {
-      name: 'mathmaster',
-      displayName: 'Math Master',
-      user, pass,
-      from: `Math Master <${user}>`,
-      subject: 'Math Master • Mã OTP của bạn',
-      theme: { primary: '#7C3AED', accent: '#22C55E', text: '#111827', muted: '#6B7280', border: '#E5E7EB', bg: '#F9FAFB' },
-      support: 'mathmaster396@gmail.com',
-    };
-  }
-
-  // default: EFB
-  const user = process.env.EMAIL_USER;
-  const pass = process.env.EMAIL_PASS;
-  if (!user || !pass) throw new Error('Missing EMAIL_USER/EMAIL_PASS');
-  return {
-    name: 'efb',
-    displayName: 'English For Beginner',
-    user, pass,
-    from: `English For Beginner <${user}>`,
-    subject: 'EFB • Mã OTP của bạn',
-    theme: { primary: '#2563EB', accent: '#F59E0B', text: '#111827', muted: '#6B7280', border: '#E5E7EB', bg: '#F9FAFB' },
-    support: 'efbenglishforbeginner@gmail.com',
-  };
-}
-function createTransporter(user, pass) {
-  return nodemailer.createTransport({ service: 'gmail', auth: { user, pass } });
-}
-
-/* ============================
-   OTP store (RAM) + TTL
-   ============================ */
-const OTP_TTL_MINUTES = 10;
-const OTP_TTL_MS = OTP_TTL_MINUTES * 60 * 1000;
-const otpStore = new Map(); // key: `${account}:${email}` -> { code, exp }
-
-function setOtp(account, email, code) {
-  const key = `${String(account).toLowerCase()}:${String(email).toLowerCase()}`;
-  otpStore.set(key, { code: String(code), exp: Date.now() + OTP_TTL_MS });
-}
-function checkOtp(account, email, code) {
-  const key = `${String(account).toLowerCase()}:${String(email).toLowerCase()}`;
-  const item = otpStore.get(key);
-  if (!item) return { ok: false, reason: 'OTP không tồn tại hoặc đã hết hạn' };
-  if (Date.now() > item.exp) {
-    otpStore.delete(key);
-    return { ok: false, reason: 'OTP đã hết hạn' };
-  }
-  if (String(code) !== String(item.code)) return { ok: false, reason: 'Mã OTP không đúng' };
-  otpStore.delete(key);
-  return { ok: true };
-}
-
-/* ============================
-   Email template
-   ============================ */
-function buildOtpEmail({ otp, cfg, toEmail }) {
-  const t = cfg.theme;
-  const brand = cfg.displayName;
-  const preheader = `${brand}: Mã OTP của bạn là ${otp}. Mã dùng trong ${OTP_TTL_MINUTES} phút. Không chia sẻ mã cho bất kỳ ai.`;
-
-  const html = `<!DOCTYPE html>
-<html lang="vi"><head><meta charSet="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>${cfg.subject}</title>
-<style>body,table,td,a{ -webkit-text-size-adjust:100%; -ms-text-size-adjust:100% }table,td{ mso-table-lspace:0pt; mso-table-rspace:0pt }img{ -ms-interpolation-mode:bicubic }body{ margin:0; padding:0; width:100% !important; background:${t.bg}; }a{ text-decoration:none }</style>
-</head>
-<body>
-<span style="display:none!important;opacity:0;color:transparent;visibility:hidden;height:0;width:0;overflow:hidden;">${preheader}</span>
-<table role="presentation" width="100%" style="background:${t.bg};padding:24px 12px;" cellpadding="0" cellspacing="0" border="0">
-<tr><td align="center">
-  <table role="presentation" width="560" style="background:#fff;border:1px solid ${t.border};border-radius:12px;overflow:hidden;" cellpadding="0" cellspacing="0" border="0">
-    <tr><td style="background:${t.primary};padding:20px 24px;">
-      <h1 style="margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:18px;line-height:24px;color:#fff;">${brand}</h1>
-    </td></tr>
-    <tr><td style="padding:24px;">
-      <p style="margin:0 0 12px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:${t.text};">
-        Xin chào${toEmail ? `, <strong>${toEmail}</strong>` : ''} 👋
-      </p>
-      <p style="margin:0 0 16px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:${t.text};">
-        Dưới đây là <strong>mã xác thực (OTP)</strong> của bạn. Vui lòng nhập mã này để tiếp tục quá trình xác minh tài khoản.
-      </p>
-      <table role="presentation" width="100%" style="margin:8px 0 16px;" cellpadding="0" cellspacing="0" border="0">
-        <tr><td align="center" style="padding:16px;border:1px dashed ${t.border};border-radius:10px;background:#F3F4F6;">
-          <div style="font-family:ui-monospace,Menlo,Monaco,Consolas,'Courier New',monospace;font-size:28px;letter-spacing:8px;color:${t.text};font-weight:700;">${otp}</div>
-          <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px;color:${t.muted};margin-top:8px;">Mã có hiệu lực trong ${OTP_TTL_MINUTES} phút.</div>
-        </td></tr>
-      </table>
-      <p style="margin:0 0 12px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:${t.muted};">
-        Nếu bạn không yêu cầu mã này, hãy bỏ qua email hoặc liên hệ hỗ trợ để được trợ giúp.
-      </p>
-      <ul style="margin:8px 0 0 18px;padding:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:${t.text};">
-        <li>Không chia sẻ mã cho bất kỳ ai.</li>
-        <li>Hãy chắc chắn rằng bạn đang thao tác trên ứng dụng/website chính thức của ${brand}.</li>
-      </ul>
-    </td></tr>
-    <tr><td style="padding:16px 24px;border-top:1px solid ${t.border};background:#fafafa;">
-      <p style="margin:0 0 6px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:${t.muted};">
-        Cần hỗ trợ? Liên hệ: <a href="mailto:${cfg.support}" style="color:${t.primary};">${cfg.support}</a>
-      </p>
-      <p style="margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:${t.muted};">© ${new Date().getFullYear()} ${brand}. All rights reserved.</p>
-    </td></tr>
-  </table>
-  <div style="max-width:560px;margin:8px auto 0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:${t.muted};">
-    Bạn nhận được email này vì có yêu cầu xác thực bằng địa chỉ của bạn.
-  </div>
-</td></tr></table>
-</body></html>`;
-
-  const text = [
-    `${brand} - Mã OTP của bạn: ${otp}`,
-    '',
-    `Mã có hiệu lực trong ${OTP_TTL_MINUTES} phút.`,
-    'Không chia sẻ mã cho bất kỳ ai.',
-    '',
-    `Nếu bạn không yêu cầu mã này, vui lòng bỏ qua email hoặc liên hệ: ${cfg.support}`,
-    '',
-    `© ${new Date().getFullYear()} ${brand}.`,
-  ].join('\n');
-
-  return { html, text };
-}
-
-/* ============================
-   Health check
-   ============================ */
-app.get('/', (_req, res) => res.json({ ok: true, apps: admin.apps.map(a => a.name) }));
-
-/* ============================
-   API: Gửi OTP
-   ============================ */
+// 📨 Gửi OTP
 app.post('/send-otp', async (req, res) => {
-  let { email, account } = req.body || {};
-  account = String(account || 'efb').toLowerCase();
-  if (!email) return res.status(400).json({ success: false, message: 'Missing email' });
+  const { email } = req.body;
 
+  // ✅ Tạo mã OTP 6 chữ số
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
+  // ✉️ Cấu hình gửi Gmail
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,     // Gmail bạn
+      pass: process.env.EMAIL_PASS,     // Mật khẩu ứng dụng Gmail
+    },
+  });
+
+  const mailOptions = {
+  from: `English For Beginner <${process.env.EMAIL_USER}>`,
+  to: email,
+  subject: 'Mã xác thực OTP của bạn',
+  html: `
+    <div style="font-family: Arial, sans-serif; color: #333; padding: 20px;">
+      <h2 style="color: #6C63FF;">🔐 Xác minh tài khoản EFB</h2>
+
+      <p>Chào bạn,</p>
+
+      <p>Bạn (hoặc ai đó) vừa yêu cầu mã OTP để xác thực tài khoản trên <strong>English For Beginners</strong>.</p>
+
+      <p style="margin: 20px 0; font-size: 18px;">
+        Mã xác thực của bạn là:
+        <br/>
+        <span style="display: inline-block; margin-top: 10px; padding: 12px 24px; background-color: #f4f4f4; border-radius: 8px; font-size: 26px; font-weight: bold; color: #6C63FF;">
+          ${otp}
+        </span>
+      </p>
+
+      <p>Vui lòng không chia sẻ mã này với bất kỳ ai để bảo vệ tài khoản của bạn.</p>
+
+      <p>Nếu bạn không thực hiện yêu cầu này, hãy bỏ qua email này.</p>
+
+      <hr style="margin: 30px 0;" />
+
+      <p style="font-size: 14px; color: #999;">
+        Trân trọng,<br/>
+        Đội ngũ <strong>EFB - English For Beginners</strong>
+      </p>
+    </div>
+  `,
+};
+
   try {
-    const cfg = getAccountConfig(account);
-    setOtp(account, email, otp);
-
-    const transporter = createTransporter(cfg.user, cfg.pass);
-    const tpl = buildOtpEmail({ otp, cfg, toEmail: email });
-
-    await transporter.sendMail({
-      from: cfg.from,
-      to: email,
-      subject: cfg.subject,
-      html: tpl.html,
-      text: tpl.text,
-      headers: { 'X-Auto-Response-Suppress': 'All' },
-    });
-
-    const payload = { success: true, message: `Đã gửi OTP qua ${cfg.name}` };
-    if (String(process.env.RETURN_OTP_IN_RESPONSE).toLowerCase() === 'true') payload.otp = otp;
-    res.json(payload);
-  } catch (err) {
-    console.error('❌ Lỗi gửi OTP:', err);
+    console.log(`✅ Đang gửi OTP đến ${email}...`);
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true, message: 'Đã gửi OTP', otp });
+  } catch (error) {
+    console.error('❌ Lỗi gửi OTP:', error);
     res.status(500).json({ success: false, message: 'Không gửi được OTP' });
   }
 });
 
-/* ============================
-   API: Verify OTP
-   ============================ */
-app.post('/verify-otp', async (req, res) => {
-  let { email, otp, account } = req.body || {};
-  account = String(account || 'efb').toLowerCase();
-  if (!email || !otp) return res.status(400).json({ success: false, message: 'Missing email or otp' });
-
-  const result = checkOtp(account, email, otp);
-  if (!result.ok) return res.status(400).json({ success: false, message: result.reason });
-  res.json({ success: true, message: 'Xác thực OTP thành công' });
-});
-
-/* ============================
-   API: Reset mật khẩu Firebase (đa project)
-   ============================ */
+// 🔐 Reset mật khẩu Firebase
 app.post('/reset-password', async (req, res) => {
-  let { email, newPassword, account } = req.body || {};
-  if (!email || !newPassword) return res.status(400).json({ success: false, message: 'Missing email or newPassword' });
+  const { email, newPassword } = req.body;
+  
+  try {
+    const user = await admin.auth().getUserByEmail(email);
+    await admin.auth().updateUser(user.uid, { password: newPassword });
 
-  const candidates = getAuthCandidates(account); // ưu tiên account yêu cầu, rồi fallback
-  if (!candidates.length) return res.status(500).json({ success: false, message: 'Firebase admin chưa được cấu hình' });
-
-  const normalizedEmail = String(email).trim();
-  let updated = false;
-  let lastErr = null;
-
-  for (const auth of candidates) {
-    try {
-      const user = await auth.getUserByEmail(normalizedEmail);
-      await auth.updateUser(user.uid, { password: newPassword });
-      updated = true;
-      break;
-    } catch (e) {
-      lastErr = e;
-      if (e?.errorInfo?.code !== 'auth/user-not-found' && e?.code !== 'auth/user-not-found') {
-        break; // lỗi khác -> dừng vòng lặp
-      }
-      // nếu user-not-found -> thử app tiếp theo
-    }
+    res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
+  } catch (error) {
+    console.error('❌ Lỗi cập nhật mật khẩu:', error);
+    res.status(500).json({ success: false, message: error.message });
+    console.error('❌ Email không hợp lệ:', error.message);
+    res.status(404).json({ success: false, message: 'Email không tồn tại trong hệ thống' });
   }
-
-  if (!updated) {
-    const code = lastErr?.errorInfo?.code || lastErr?.code;
-    if (code === 'auth/user-not-found') {
-      return res.status(404).json({ success: false, message: 'Tài khoản không tồn tại trong các dự án đã cấu hình.' });
-    }
-    return res.status(500).json({ success: false, message: lastErr?.message || 'Update failed' });
-  }
-
-  res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
 });
 
-/* ============================
-   (Tuỳ chọn) Debug: email thuộc project nào?
-   ============================ */
-app.get('/who-has-user', async (req, res) => {
-  const email = String(req.query.email || '').trim();
-  if (!email) return res.status(400).json({ ok: false, message: 'Missing email' });
-  const found = [];
-  for (const name of ['mathmaster', 'efb']) {
-    try {
-      const u = await admin.app(name).auth().getUserByEmail(email);
-      found.push({ project: name, uid: u.uid, providers: u.providerData.map(p => p.providerId) });
-    } catch {}
-  }
-  if (!found.length) return res.status(404).json({ ok: false, message: 'user-not-found in both projects' });
-  res.json({ ok: true, results: found });
-});
-
-/* ============================
-   Start server
-   ============================ */
+// 🚀 Khởi động server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log('✅ Server is running on port', PORT, 'apps:', admin.apps.map(a => a.name));
+  console.log(`✅ Server is running on port ${PORT}`);
 });
