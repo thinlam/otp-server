@@ -40,10 +40,20 @@ function getAccountConfig(rawAccount) {
     if (!user || !pass) throw new Error('Missing EMAIL_USER2/EMAIL_PASS2');
     return {
       name: 'mathmaster',
+      displayName: 'Math Master',
       user,
       pass,
       from: `Math Master <${user}>`,
       subject: 'Math Master • Mã OTP của bạn',
+      theme: {
+        primary: '#7C3AED',     // tím
+        accent: '#22C55E',      // xanh lá
+        text: '#111827',
+        muted: '#6B7280',
+        border: '#E5E7EB',
+        bg: '#F9FAFB',
+      },
+      support: 'support@mathmaster.app',
     };
   }
 
@@ -53,10 +63,20 @@ function getAccountConfig(rawAccount) {
   if (!user || !pass) throw new Error('Missing EMAIL_USER/EMAIL_PASS');
   return {
     name: 'efb',
+    displayName: 'English For Beginner',
     user,
     pass,
     from: `English For Beginner <${user}>`,
     subject: 'EFB • Mã OTP của bạn',
+    theme: {
+      primary: '#2563EB',      // xanh dương
+      accent: '#F59E0B',       // vàng
+      text: '#111827',
+      muted: '#6B7280',
+      border: '#E5E7EB',
+      bg: '#F9FAFB',
+    },
+    support: 'support@efbenglish.app',
   };
 }
 
@@ -65,6 +85,127 @@ function createTransporter(user, pass) {
     service: 'gmail',
     auth: { user, pass }, // App Password từ Gmail
   });
+}
+
+/* ============================
+   Email template chuyên nghiệp
+   ============================ */
+const OTP_TTL_MINUTES = 10; // chỉ hiển thị trong email (nếu chưa triển khai TTL thực tế)
+
+function buildOtpEmail({ otp, cfg, toEmail }) {
+  const t = cfg.theme;
+  const brand = cfg.displayName;
+
+  const preheader =
+    `${brand}: Mã OTP của bạn là ${otp}. Mã dùng trong ${OTP_TTL_MINUTES} phút. Không chia sẻ mã cho bất kỳ ai.`;
+
+  const html = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charSet="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${cfg.subject}</title>
+  <style>
+    /* Reset cơ bản cho email client */
+    body,table,td,a{ -webkit-text-size-adjust:100%; -ms-text-size-adjust:100% }
+    table,td{ mso-table-lspace:0pt; mso-table-rspace:0pt }
+    img{ -ms-interpolation-mode:bicubic }
+    body{ margin:0; padding:0; width:100% !important; background:${t.bg}; }
+    a{ text-decoration:none }
+  </style>
+</head>
+<body>
+  <!-- Preheader (ẩn) -->
+  <span style="display:none!important;opacity:0;color:transparent;visibility:hidden;height:0;width:0;overflow:hidden;">
+    ${preheader}
+  </span>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${t.bg};padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="560" style="background:#ffffff;border:1px solid ${t.border};border-radius:12px;overflow:hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="background:${t.primary};padding:20px 24px;">
+              <h1 style="margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:18px;line-height:24px;color:#ffffff;">
+                ${brand}
+              </h1>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:24px;">
+              <p style="margin:0 0 12px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:${t.text};">
+                Xin chào${toEmail ? `, <strong>${toEmail}</strong>` : ''} 👋
+              </p>
+              <p style="margin:0 0 16px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:${t.text};">
+                Dưới đây là <strong>mã xác thực (OTP)</strong> của bạn. Vui lòng nhập mã này để tiếp tục quá trình xác minh tài khoản.
+              </p>
+
+              <!-- OTP Block -->
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:8px 0 16px;">
+                <tr>
+                  <td align="center" style="padding:16px;border:1px dashed ${t.border};border-radius:10px;background:#F3F4F6;">
+                    <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
+                                font-size:28px;letter-spacing:8px;color:${t.text};font-weight:700;">
+                      ${otp}
+                    </div>
+                    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+                                font-size:13px;color:${t.muted};margin-top:8px;">
+                      Mã có hiệu lực trong ${OTP_TTL_MINUTES} phút.
+                    </div>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin:0 0 12px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:${t.muted};">
+                Nếu bạn không yêu cầu mã này, hãy bỏ qua email hoặc liên hệ hỗ trợ để được trợ giúp.
+              </p>
+
+              <!-- Tips -->
+              <ul style="margin:8px 0 0 18px;padding:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:${t.text};">
+                <li>Không chia sẻ mã cho bất kỳ ai.</li>
+                <li>Hãy chắc chắn rằng bạn đang thực hiện thao tác trên ứng dụng/website chính thức của ${brand}.</li>
+              </ul>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:16px 24px;border-top:1px solid ${t.border};background:#fafafa;">
+              <p style="margin:0 0 6px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:${t.muted};">
+                Cần hỗ trợ? Liên hệ: <a href="mailto:${cfg.support}" style="color:${t.primary};">${cfg.support}</a>
+              </p>
+              <p style="margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:${t.muted};">
+                © ${new Date().getFullYear()} ${brand}. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Small note -->
+        <div style="max-width:560px;margin:8px auto 0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:${t.muted};">
+          Bạn nhận được email này vì có yêu cầu xác thực bằng địa chỉ của bạn.
+        </div>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  const text = [
+    `${brand} - Mã OTP của bạn: ${otp}`,
+    '',
+    `Mã có hiệu lực trong ${OTP_TTL_MINUTES} phút.`,
+    'Không chia sẻ mã cho bất kỳ ai.',
+    '',
+    `Nếu bạn không yêu cầu mã này, vui lòng bỏ qua email hoặc liên hệ: ${cfg.support}`,
+    '',
+    `© ${new Date().getFullYear()} ${brand}.`,
+  ].join('\n');
+
+  return { html, text };
 }
 
 /* ============================
@@ -84,12 +225,18 @@ app.post('/send-otp', async (req, res) => {
     const cfg = getAccountConfig(account);
     console.log('Send OTP:', { email, account: cfg.name, using: cfg.user });
 
+    const tpl = buildOtpEmail({ otp, cfg, toEmail: email });
     const transporter = createTransporter(cfg.user, cfg.pass);
+
     await transporter.sendMail({
       from: cfg.from,                 // phải trùng email đang auth
       to: email,
-      subject: cfg.subject,           // dễ phân biệt trong inbox
-      html: `<p>Mã OTP: <b>${otp}</b></p>`,
+      subject: cfg.subject,           // phân biệt theo brand
+      html: tpl.html,
+      text: tpl.text,
+      headers: {
+        'X-Auto-Response-Suppress': 'All',
+      },
     });
 
     // ⚠️ Prod KHÔNG trả OTP về client
