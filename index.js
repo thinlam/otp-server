@@ -16,16 +16,22 @@ app.use(express.json());
 if (!process.env.SERVICE_ACCOUNT_KEY) {
   throw new Error('Missing SERVICE_ACCOUNT_KEY in .env');
 }
+
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
-if (serviceAccount.private_key?.includes('\\n')) {
+
+// Fix xuống dòng private_key (khi để JSON 1 dòng trong .env)
+if (serviceAccount.private_key && serviceAccount.private_key.includes('\\n')) {
   serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 }
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 /* ============================
    Email helpers (2 accounts)
    ============================ */
-function getAccountConfig(rawAccount: string | undefined) {
+function getAccountConfig(rawAccount) {
   const account = String(rawAccount || 'efb').toLowerCase();
 
   if (account === 'mathmaster') {
@@ -54,10 +60,10 @@ function getAccountConfig(rawAccount: string | undefined) {
   };
 }
 
-function createTransporter(user: string, pass: string) {
+function createTransporter(user, pass) {
   return nodemailer.createTransport({
     service: 'gmail',
-    auth: { user, pass },
+    auth: { user, pass }, // App Password từ Gmail
   });
 }
 
@@ -68,7 +74,9 @@ app.post('/send-otp', async (req, res) => {
   let { email, account } = req.body || {};
   account = String(account || 'efb').toLowerCase();
 
-  if (!email) return res.status(400).json({ success: false, message: 'Missing email' });
+  if (!email) {
+    return res.status(400).json({ success: false, message: 'Missing email' });
+  }
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -78,15 +86,15 @@ app.post('/send-otp', async (req, res) => {
 
     const transporter = createTransporter(cfg.user, cfg.pass);
     await transporter.sendMail({
-      from: cfg.from,            // phải trùng email user đã auth
+      from: cfg.from,                 // phải trùng email đang auth
       to: email,
-      subject: cfg.subject,      // giúp phân biệt trong inbox
+      subject: cfg.subject,           // dễ phân biệt trong inbox
       html: `<p>Mã OTP: <b>${otp}</b></p>`,
     });
 
-    // ⚠️ Prod không trả OTP
+    // ⚠️ Prod KHÔNG trả OTP về client
     return res.json({ success: true, message: `Đã gửi OTP qua ${cfg.name}` });
-  } catch (err: any) {
+  } catch (err) {
     console.error('❌ Lỗi gửi OTP:', err);
     return res.status(500).json({ success: false, message: 'Không gửi được OTP' });
   }
@@ -105,7 +113,7 @@ app.post('/reset-password', async (req, res) => {
     const user = await admin.auth().getUserByEmail(email);
     await admin.auth().updateUser(user.uid, { password: newPassword });
     return res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
-  } catch (error: any) {
+  } catch (error) {
     console.error('❌ Lỗi cập nhật mật khẩu:', error);
     return res.status(500).json({ success: false, message: error?.message || 'Update failed' });
   }
