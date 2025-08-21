@@ -11,42 +11,50 @@ app.use(cors());
 app.use(express.json());
 
 /* ============================
-   Firebase Admin init
+   Firebase Admin init (1 project)
    ============================ */
 if (!process.env.SERVICE_ACCOUNT_KEY) {
   throw new Error('Missing SERVICE_ACCOUNT_KEY in .env');
 }
-
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY);
-
-// Fix xuống dòng private_key
 if (serviceAccount.private_key?.includes('\\n')) {
   serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
 }
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 
 /* ============================
    Email helpers (2 accounts)
    ============================ */
-function getAccountConfig(account = 'efb') {
+function getAccountConfig(rawAccount: string | undefined) {
+  const account = String(rawAccount || 'efb').toLowerCase();
+
   if (account === 'mathmaster') {
+    const user = process.env.EMAIL_USER2;
+    const pass = process.env.EMAIL_PASS2;
+    if (!user || !pass) throw new Error('Missing EMAIL_USER2/EMAIL_PASS2');
     return {
-      user: process.env.EMAIL_USER2,
-      pass: process.env.EMAIL_PASS2,
-      fromName: `Math Master <${process.env.EMAIL_USER2}>`,
+      name: 'mathmaster',
+      user,
+      pass,
+      from: `Math Master <${user}>`,
+      subject: 'Math Master • Mã OTP của bạn',
     };
   }
+
+  // default: efb
+  const user = process.env.EMAIL_USER;
+  const pass = process.env.EMAIL_PASS;
+  if (!user || !pass) throw new Error('Missing EMAIL_USER/EMAIL_PASS');
   return {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-    fromName: `English For Beginner <${process.env.EMAIL_USER}>`,
+    name: 'efb',
+    user,
+    pass,
+    from: `English For Beginner <${user}>`,
+    subject: 'EFB • Mã OTP của bạn',
   };
 }
 
-function createTransporter({ user, pass }) {
+function createTransporter(user: string, pass: string) {
   return nodemailer.createTransport({
     service: 'gmail',
     auth: { user, pass },
@@ -57,28 +65,28 @@ function createTransporter({ user, pass }) {
    API: Gửi OTP
    ============================ */
 app.post('/send-otp', async (req, res) => {
-  const { email, account = 'efb' } = req.body || {};
+  let { email, account } = req.body || {};
+  account = String(account || 'efb').toLowerCase();
+
   if (!email) return res.status(400).json({ success: false, message: 'Missing email' });
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
   try {
     const cfg = getAccountConfig(account);
-    const transporter = createTransporter(cfg);
+    console.log('Send OTP:', { email, account: cfg.name, using: cfg.user });
 
-    const mailOptions = {
-      from: cfg.fromName,
+    const transporter = createTransporter(cfg.user, cfg.pass);
+    await transporter.sendMail({
+      from: cfg.from,            // phải trùng email user đã auth
       to: email,
-      subject: 'Mã xác thực OTP của bạn',
+      subject: cfg.subject,      // giúp phân biệt trong inbox
       html: `<p>Mã OTP: <b>${otp}</b></p>`,
-    };
+    });
 
-    console.log(`✅ Gửi OTP đến ${email} bằng ${cfg.user}`);
-    await transporter.sendMail(mailOptions);
-
-    // ⚠️ Trong production không nên trả OTP về client
-    return res.json({ success: true, message: 'Đã gửi OTP', otp });
-  } catch (err) {
+    // ⚠️ Prod không trả OTP
+    return res.json({ success: true, message: `Đã gửi OTP qua ${cfg.name}` });
+  } catch (err: any) {
     console.error('❌ Lỗi gửi OTP:', err);
     return res.status(500).json({ success: false, message: 'Không gửi được OTP' });
   }
@@ -97,7 +105,7 @@ app.post('/reset-password', async (req, res) => {
     const user = await admin.auth().getUserByEmail(email);
     await admin.auth().updateUser(user.uid, { password: newPassword });
     return res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
-  } catch (error) {
+  } catch (error: any) {
     console.error('❌ Lỗi cập nhật mật khẩu:', error);
     return res.status(500).json({ success: false, message: error?.message || 'Update failed' });
   }
