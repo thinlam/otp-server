@@ -82,21 +82,33 @@ app.post('/send-otp', async (req, res) => {
 });
 
 // 🔐 Reset mật khẩu Firebase
+// 🔐 Reset mật khẩu Firebase (fix)
 app.post('/reset-password', async (req, res) => {
-  const { email, newPassword } = req.body;
-  
   try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const newPassword = String(req.body?.newPassword || '');
+
+    if (!email || !newPassword) {
+      return res.status(400).json({ success: false, message: 'Thiếu email hoặc mật khẩu mới' });
+    }
+
     const user = await admin.auth().getUserByEmail(email);
     await admin.auth().updateUser(user.uid, { password: newPassword });
 
-    res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
+    return res.json({ success: true, message: 'Đã cập nhật mật khẩu thành công' });
   } catch (error) {
     console.error('❌ Lỗi cập nhật mật khẩu:', error);
-    res.status(500).json({ success: false, message: error.message });
-    console.error('❌ Email không hợp lệ:', error.message);
-    res.status(404).json({ success: false, message: 'Email không tồn tại trong hệ thống' });
+
+    // Email không tồn tại trong project hiện tại
+    if (error?.code === 'auth/user-not-found') {
+      return res.status(404).json({ success: false, message: 'Email không tồn tại trong hệ thống' });
+    }
+
+    // Các lỗi khác
+    return res.status(500).json({ success: false, message: 'Không thể cập nhật mật khẩu' });
   }
 });
+
 
 // 🚀 Khởi động server
 const PORT = process.env.PORT || 3000;
